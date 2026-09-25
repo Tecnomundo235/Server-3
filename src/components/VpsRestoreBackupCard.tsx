@@ -196,6 +196,14 @@ export default function VpsRestoreBackupCard({
 
       setEstado('completado');
       setMensajeEstado(`¡Restauración exitosa! ${productos.length} productos procesados.`);
+
+      // Guardar todos los 710 productos en el localStorage del navegador
+      try {
+        localStorage.setItem('bibi_store_cached_productos', JSON.stringify(productos));
+      } catch (e) {
+        console.warn("Aviso guardando en localStorage:", e);
+      }
+
       if (onSuccess) {
         onSuccess({
           totalItems: productos.length,

@@ -232,11 +232,41 @@ app.post('/api/vps/migracion-completa', async (req, res) => {
       });
     }
 
-    // Save productos asíncronamente
-    await writeJSONAsync(PRODUCTOS_FILE, sanitizedProductos);
+    // Si ya existen productos en la VPS (ej: 710 productos restaurados), hacer UPSERT
+    // para no destruir los 710 productos al recibir una sincronización parcial de 100 productos
+    const currentProductos = readJSON(PRODUCTOS_FILE, []);
+    const idMap = new Map();
+    const barcodeMap = new Map();
+    currentProductos.forEach((p, idx) => {
+      if (p.id) idMap.set(String(p.id), idx);
+      if (p.codigo_barras) barcodeMap.set(String(p.codigo_barras), idx);
+    });
+
+    for (const p of sanitizedProductos) {
+      let idx = -1;
+      if (p.id && idMap.has(String(p.id))) {
+        idx = idMap.get(String(p.id));
+      } else if (p.codigo_barras && barcodeMap.has(String(p.codigo_barras))) {
+        idx = barcodeMap.get(String(p.codigo_barras));
+      }
+
+      if (idx >= 0) {
+        currentProductos[idx] = {
+          ...currentProductos[idx],
+          ...p,
+          imagen_url: p.imagen_url || currentProductos[idx].imagen_url
+        };
+      } else {
+        currentProductos.unshift(p);
+      }
+    }
+
+    // Guardar productos asíncronamente preservando el total
+    await writeJSONAsync(PRODUCTOS_FILE, currentProductos);
 
     if (config) {
-      await writeJSONAsync(CONFIG_FILE, config);
+      const currentConfig = readJSON(CONFIG_FILE, {});
+      await writeJSONAsync(CONFIG_FILE, { ...currentConfig, ...config });
     }
 
     if (fiados && Array.isArray(fiados)) {
@@ -250,15 +280,15 @@ app.post('/api/vps/migracion-completa', async (req, res) => {
     // Timestamped backup sin Base64 pesadas
     const backupName = path.join(DATA_DIR, `backup_${Date.now()}.json`);
     await writeJSONAsync(backupName, { 
-      total: sanitizedProductos.length, 
+      total: currentProductos.length, 
       fecha: new Date().toISOString() 
     });
 
-    console.log(`[MIGRACIÓN EXITOSA] ${sanitizedProductos.length} productos guardados. ${decoupledCount} imágenes desacopladas a disco.`);
+    console.log(`[MIGRACIÓN EXITOSA] ${currentProductos.length} productos en base de datos. ${decoupledCount} imágenes desacopladas a disco.`);
     return res.json({
       success: true,
       mensaje: `Migración completada exitosamente en la VPS.`,
-      totalProductos: sanitizedProductos.length,
+      totalProductos: currentProductos.length,
       imagesDecoupled: decoupledCount
     });
   } catch (err) {

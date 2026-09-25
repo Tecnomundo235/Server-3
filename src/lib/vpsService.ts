@@ -7,9 +7,11 @@ export interface VPSStatus {
 
 export function isVpsHost(): boolean {
   if (typeof window === 'undefined') return false;
-  return window.location.hostname === '143.198.163.70' || 
-         window.location.hostname === '64.227.15.171' || 
-         window.location.hostname === 'localhost';
+  const h = window.location.hostname;
+  return h === '143.198.163.70' || 
+         h === '64.227.15.171' || 
+         h === 'localhost' ||
+         /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
 }
 
 export async function checkVPSOnline(): Promise<VPSStatus> {

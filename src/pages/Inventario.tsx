@@ -12,7 +12,7 @@ import toast from 'react-hot-toast';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { exportarProductosJSON, descargarJSON } from '../lib/exportProductos';
-import { getVPSProductos, saveVPSProducto, deleteVPSProducto, migrarTodoAVPS } from '../lib/vpsService';
+import { getVPSProductos, saveVPSProducto, deleteVPSProducto, migrarTodoAVPS, isVpsHost } from '../lib/vpsService';
 
 export default function Inventario() {
   const { role } = useAuth();
@@ -126,7 +126,15 @@ export default function Inventario() {
     // 1. Cargar inmediatamente desde la VPS si está disponible
     getVPSProductos().then(vpsProds => {
       if (vpsProds && Array.isArray(vpsProds) && vpsProds.length > 0) {
-        setProductos(prev => prev.length === 0 ? vpsProds : prev);
+        setProductos(prev => {
+          if (vpsProds.length >= prev.length || isVpsHost()) {
+            try {
+              localStorage.setItem('bibi_store_cached_productos', JSON.stringify(vpsProds));
+            } catch {}
+            return vpsProds;
+          }
+          return prev;
+        });
         setCargando(false);
       }
     }).catch(() => {});
@@ -137,10 +145,20 @@ export default function Inventario() {
     const unsubProd = onSnapshot(q, (snap) => {
       const prodData = snap.docs.map(d => ({ id: d.id, ...d.data() } as Producto));
       if (prodData.length > 0) {
-        setProductos(prodData);
-        try {
-          localStorage.setItem('bibi_store_cached_productos', JSON.stringify(prodData));
-        } catch {}
+        setProductos(prev => {
+          // Si estamos en la VPS o si ya tenemos 710 productos en memoria y Firestore sólo trae 100, PRESERVAR los 710
+          if (prev.length > prodData.length) {
+            console.log(`[Inventario] Conservando ${prev.length} productos frente a ${prodData.length} de Firestore`);
+            return prev;
+          }
+          if (isVpsHost() && prev.length > 0) {
+            return prev;
+          }
+          try {
+            localStorage.setItem('bibi_store_cached_productos', JSON.stringify(prodData));
+          } catch {}
+          return prodData;
+        });
       }
       setCargando(false);
 

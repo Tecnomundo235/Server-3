@@ -8,7 +8,7 @@ import { Producto, VentaItem, CATEGORIAS_PRODUCTO } from '../types';
 import { Search, Trash2, Scan, X, ShoppingCart, UploadCloud, Database } from 'lucide-react';
 import Scanner from '../components/Scanner';
 import toast from 'react-hot-toast';
-import { saveVPSVenta, migrarTodoAVPS } from '../lib/vpsService';
+import { saveVPSVenta, migrarTodoAVPS, isVpsHost } from '../lib/vpsService';
 
 export default function Vender() {
   const { tasaDolar } = useConfig();
@@ -43,10 +43,15 @@ export default function Vender() {
       .then(r => r.ok ? r.json() : null)
       .then(vpsProds => {
         if (vpsProds && Array.isArray(vpsProds) && vpsProds.length > 0) {
-          setProductos(vpsProds);
-          try {
-            localStorage.setItem('bibi_store_cached_productos', JSON.stringify(vpsProds));
-          } catch {}
+          setProductos(prev => {
+            if (vpsProds.length >= prev.length || isVpsHost()) {
+              try {
+                localStorage.setItem('bibi_store_cached_productos', JSON.stringify(vpsProds));
+              } catch {}
+              return vpsProds;
+            }
+            return prev;
+          });
         }
       })
       .catch(() => {});
@@ -55,11 +60,23 @@ export default function Vender() {
     const q = query(collection(db, 'productos'));
     const unsub = onSnapshot(q, (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as Producto));
-      setProductos(data);
-      try {
-        localStorage.setItem('bibi_store_cached_productos', JSON.stringify(data));
-      } catch (e) {
-        console.warn("No se pudo respaldar en localStorage:", e);
+      if (data.length > 0) {
+        setProductos(prev => {
+          // Si estamos en la VPS o si ya tenemos 710 productos en memoria y Firestore sólo trae 100, PRESERVAR los 710
+          if (prev.length > data.length) {
+            console.log(`[Vender] Conservando ${prev.length} productos frente a ${data.length} de Firestore`);
+            return prev;
+          }
+          if (isVpsHost() && prev.length > 0) {
+            return prev;
+          }
+          try {
+            localStorage.setItem('bibi_store_cached_productos', JSON.stringify(data));
+          } catch (e) {
+            console.warn("No se pudo respaldar en localStorage:", e);
+          }
+          return data;
+        });
       }
     }, (err) => {
       console.error("Error cargando productos en Vender:", err);

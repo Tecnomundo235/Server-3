@@ -7,7 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { exportarProductosJSON, descargarJSON, ProductoExportJSON } from '../lib/exportProductos';
 import { handleAutomatedMigration, handleDirectJSONImportToSupabase, generateSQLFromJSON, MigrationProgress } from '../lib/supabaseMigration';
-import { checkVPSOnline, migrarTodoAVPS, VPSStatus } from '../lib/vpsService';
+import { checkVPSOnline, migrarTodoAVPS, getVPSProductos, VPSStatus } from '../lib/vpsService';
 import VpsRestoreBackupCard from '../components/VpsRestoreBackupCard';
 
 export default function Ajustes() {
@@ -75,12 +75,27 @@ export default function Ajustes() {
 
   const handleMigrarAVPS = async () => {
     setMigrandoVPS(true);
-    const loadingToast = toast.loading("Preparando 710 productos y enviando a la VPS...");
+    const loadingToast = toast.loading("Verificando catálogo y sincronizando con la VPS...");
     try {
+      // 1. Verificar productos actuales en la VPS
+      const vpsProds = await getVPSProductos();
       let prods: any[] = [];
       const cached = localStorage.getItem('bibi_store_cached_productos');
       if (cached) {
         try { prods = JSON.parse(cached); } catch {}
+      }
+
+      // Si la VPS ya tiene más productos (ej: 710) que la memoria local (ej: 100), sincronizar local desde la VPS
+      if (vpsProds && vpsProds.length > prods.length) {
+        try {
+          localStorage.setItem('bibi_store_cached_productos', JSON.stringify(vpsProds));
+        } catch {}
+        toast.success(`🎉 ¡Catálogo protegido! Tu VPS cuenta con ${vpsProds.length} productos activos. Se sincronizó la memoria de este navegador.`, {
+          id: loadingToast,
+          duration: 8000
+        });
+        checkVPSOnline().then(setVpsStatus);
+        return;
       }
 
       if (prods.length === 0) {
@@ -88,7 +103,7 @@ export default function Ajustes() {
       }
 
       if (prods.length === 0) {
-        throw new Error("No hay productos cargados en memoria. Abre la pantalla de Inventario primero.");
+        throw new Error("No hay productos cargados en memoria. Usa la tarjeta de abajo para restaurar tu archivo JSON de 710 productos.");
       }
 
       const res = await migrarTodoAVPS({
@@ -96,7 +111,11 @@ export default function Ajustes() {
         config: { tasa_dolar: Number(nuevaTasa) || tasaDolar || 50 }
       });
 
-      toast.success(`🎉 ¡Migración Perfecta! ${res.totalProductos} productos guardados en el disco de tu VPS.`, {
+      try {
+        localStorage.setItem('bibi_store_cached_productos', JSON.stringify(prods));
+      } catch {}
+
+      toast.success(`🎉 ¡Sincronización Exitosa! ${res.totalProductos} productos activos en tu VPS.`, {
         id: loadingToast,
         duration: 8000
       });
@@ -638,6 +657,13 @@ echo "========================================================="
               onSuccess={(stats) => {
                 toast.success(`🎉 ¡Restauración exitosa! ${stats.totalItems} productos guardados en VPS. (${stats.imagesDecoupledCount} fotos desacopladas a disco)`, { duration: 7000 });
                 checkVPSOnline().then(setVpsStatus);
+                getVPSProductos().then(prods => {
+                  if (prods && prods.length > 0) {
+                    try {
+                      localStorage.setItem('bibi_store_cached_productos', JSON.stringify(prods));
+                    } catch {}
+                  }
+                });
               }}
             />
 
