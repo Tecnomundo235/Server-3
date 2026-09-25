@@ -79,11 +79,17 @@ export default function Vender() {
         });
       }
     }, (err) => {
-      console.error("Error cargando productos en Vender:", err);
-      if (err.message?.includes("Quota limit") || (err as any).code === "resource-exhausted") {
-        toast.error("Límite de lecturas gratuitas de Firebase alcanzado. Mostrando productos en memoria local.", { id: 'quota-err' });
-      } else {
-        toast.error("Error de conexión con la base de datos.", { id: 'conn-err' });
+      console.warn("Aviso Firestore productos en Vender:", err?.message || err);
+      // Solo mostrar toast de error si NO estamos en VPS y además NO hay productos en memoria local
+      if (!isVpsHost()) {
+        const cached = localStorage.getItem('bibi_store_cached_productos');
+        if (!cached || cached === '[]') {
+          if (err.message?.includes("Quota limit") || (err as any).code === "resource-exhausted") {
+            toast.error("Límite de lecturas de Firebase alcanzado. Mostrando productos en memoria local.", { id: 'quota-err' });
+          } else {
+            toast.error("Error de conexión con Firestore.", { id: 'conn-err' });
+          }
+        }
       }
     });
     return () => unsub();
