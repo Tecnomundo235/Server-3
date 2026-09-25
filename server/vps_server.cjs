@@ -138,7 +138,24 @@ app.post('/api/vps/restore-chunk', async (req, res) => {
       return res.status(400).json({ error: 'Se esperaba un array no vacío de items en el chunk.' });
     }
 
-    const currentProductos = readJSON(PRODUCTOS_FILE, []);
+    const bIndex = Number(batchIndex) || 1;
+    let currentProductos = [];
+
+    // Si es el primer lote de la restauración, respaldar el archivo anterior y comenzar limpio
+    // para que la base de datos coincida con los 710 productos exactos del respaldo
+    if (bIndex === 1) {
+      const prevProductos = readJSON(PRODUCTOS_FILE, []);
+      if (prevProductos.length > 0) {
+        const backupPath = path.join(DATA_DIR, `backup_pre_restore_${Date.now()}.json`);
+        try {
+          fs.writeFileSync(backupPath, JSON.stringify(prevProductos, null, 2));
+        } catch {}
+      }
+      currentProductos = [];
+    } else {
+      currentProductos = readJSON(PRODUCTOS_FILE, []);
+    }
+
     let createdCount = 0;
     let updatedCount = 0;
     let imagesDecoupledCount = 0;
@@ -166,11 +183,10 @@ app.post('/api/vps/restore-chunk', async (req, res) => {
         updated_at: Date.now()
       };
 
-      // UPSERT atómico por ID o por Código de Barras
-      const idx = currentProductos.findIndex(p => 
-        p.id === normalizedItem.id || 
-        (normalizedItem.codigo_barras && p.codigo_barras === normalizedItem.codigo_barras)
-      );
+      // UPSERT atómico estrictamente por ID.
+      // CRÍTICO: NUNCA hacer match por codigo_barras porque múltiples productos legítimos
+      // (sabores, colores, o productos sin código) comparten códigos de barra como "0" o vacíos.
+      const idx = currentProductos.findIndex(p => String(p.id) === String(normalizedItem.id));
 
       if (idx >= 0) {
         currentProductos[idx] = {
@@ -180,7 +196,7 @@ app.post('/api/vps/restore-chunk', async (req, res) => {
         };
         updatedCount++;
       } else {
-        currentProductos.unshift(normalizedItem);
+        currentProductos.push(normalizedItem);
         createdCount++;
       }
     }
@@ -195,7 +211,7 @@ app.post('/api/vps/restore-chunk', async (req, res) => {
 
     return res.json({
       success: true,
-      batchIndex: Number(batchIndex) || 1,
+      batchIndex: bIndex,
       totalBatches: Number(totalBatches) || 1,
       createdCount,
       updatedCount,

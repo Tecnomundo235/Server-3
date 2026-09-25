@@ -168,12 +168,8 @@ export async function processProductsBatch(
       const catId = cat ? cat.id : null;
       const catName = cat ? cat.nombre : p.categoriaNombre;
 
-      // Buscar si existe por ID o por Código de Barras
+      // Buscar si existe por ID únicamente (no por código de barras para no sobreescribir productos con códigos compartidos)
       let existing = selectByIdStmt.get(p.id);
-      if (!existing && p.codigoBarras) {
-        existing = selectByCodeStmt.get(p.codigoBarras);
-      }
-
       const targetId = existing ? existing.id : p.id;
 
       if (existing) {
