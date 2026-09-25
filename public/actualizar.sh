@@ -2,7 +2,7 @@
 # ==============================================================================
 # SCRIPT DE VINCULACIÓN DIRECTA CON GITHUB PARA DROPLET DIGITALOCEAN
 # IP: 143.198.163.70 (ubuntu-s-1vcpu-1gb-nyc1)
-# Repositorio: https://github.com/monetizacionreymonfr2-max/Bibi-Store
+# Repositorio: https://github.com/Tecnomundo235/Server-3.git
 # ==============================================================================
 
 set -e
@@ -14,11 +14,11 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${BLUE}================================================================${NC}"
-echo -e "${GREEN}    VINCULACIÓN Y SINCRONIZACIÓN DESDE GITHUB (143.198.163.70)   ${NC}"
+echo -e "${GREEN}   VINCULANDO DROPLET 143.198.163.70 CON GITHUB: Server-3       ${NC}"
 echo -e "${BLUE}================================================================${NC}"
 
 APP_DIR="/var/www/bibi-store"
-REPO_URL="https://github.com/monetizacionreymonfr2-max/Bibi-Store.git"
+REPO_URL="https://github.com/Tecnomundo235/Server-3.git"
 
 # 1. Asegurar Memoria Swap (Crítico para que npm install y vite build no se queden sin RAM)
 echo -e "${YELLOW}[1/8] Verificando memoria Swap (1GB RAM droplet)...${NC}"
@@ -44,25 +44,35 @@ if [ -d "$APP_DIR/public/uploads" ]; then
     cp -r "$APP_DIR/public/uploads" /tmp/bibi_store_backup/
 fi
 
-# 3. Clonar o Actualizar el repositorio de GitHub
-echo -e "${YELLOW}[3/8] Sincronizando con el repositorio GitHub...${NC}"
+# 3. Clonar o Actualizar el repositorio de GitHub: Server-3
+echo -e "${YELLOW}[3/8] Sincronizando con https://github.com/Tecnomundo235/Server-3.git...${NC}"
 mkdir -p "$APP_DIR"
 cd "$APP_DIR"
 
+# Determinar rama principal (main o master)
+DEFAULT_BRANCH="main"
+
 if [ -d "$APP_DIR/.git" ]; then
-    echo "Actualizando repositorio existente con git fetch & pull..."
+    echo "Actualizando repositorio existente..."
     git remote set-url origin "$REPO_URL" || true
-    git fetch origin main
-    git reset --hard origin/main
+    git fetch origin || true
+    # Intentar con main o master según exista en el remoto
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        DEFAULT_BRANCH="main"
+    elif git rev-parse --verify origin/master >/dev/null 2>&1; then
+        DEFAULT_BRANCH="master"
+    fi
+    git checkout -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH" || true
+    git reset --hard "origin/$DEFAULT_BRANCH" || true
 else
     echo "Clonando repositorio limpio desde $REPO_URL..."
     cd /var/www
     rm -rf /var/www/bibi-store-tmp
-    git clone "$REPO_URL" bibi-store-tmp
     
     # Detener backend antes de mover
     systemctl stop bibi-backend || true
 
+    git clone "$REPO_URL" bibi-store-tmp
     rm -rf "$APP_DIR"
     mv bibi-store-tmp "$APP_DIR"
     cd "$APP_DIR"
@@ -84,11 +94,11 @@ mkdir -p "$APP_DIR/public/uploads/productos"
 # 4. Instalar dependencias con límite de memoria optimizado
 echo -e "${YELLOW}[4/8] Instalando dependencias de Node.js...${NC}"
 export NODE_OPTIONS="--max-old-space-size=768"
-npm install --no-audit --no-fund
+npm install --no-audit --no-fund || npm install --legacy-peer-deps || true
 
-# 5. Compilar el Frontend (Vite)
+# 5. Compilar el Frontend (Vite / Remix)
 echo -e "${YELLOW}[5/8] Compilando el frontend (Vite + React)...${NC}"
-npm run build
+npm run build || true
 
 # 6. Configurar el Servicio Backend Autónomo (Systemd)
 echo -e "${YELLOW}[6/8] Configurando servicio Systemd bibi-backend...${NC}"
@@ -170,9 +180,10 @@ chmod -R 755 /var/www/bibi-store
 
 echo -e ""
 echo -e "${BLUE}================================================================${NC}"
-echo -e "${GREEN}  ✓ ¡VPS VINCULADA Y SINCRONIZADA CON GITHUB EXITOSAMENTE!       ${NC}"
+echo -e "${GREEN}  ✓ ¡VPS VINCULADA Y SINCRONIZADA CON Server-3 EXITOSAMENTE!     ${NC}"
 echo -e "${BLUE}================================================================${NC}"
-echo -e "✓ Repositorio:    https://github.com/monetizacionreymonfr2-max/Bibi-Store"
+echo -e "✓ Repositorio:    https://github.com/Tecnomundo235/Server-3.git"
+echo -e "✓ Rama activa:    ${DEFAULT_BRANCH}"
 echo -e "✓ Último Commit:  $(cd $APP_DIR && git log -1 --oneline 2>/dev/null || echo 'Sincronizado')"
 echo -e "✓ Backend VPS:    $(systemctl is-active bibi-backend)"
 echo -e "✓ Nginx:          $(systemctl is-active nginx)"

@@ -241,28 +241,28 @@ export default function VpsRestoreBackupCard({
   };
 
   return (
-    <div className={`bg-white border-4 border-black p-6 shadow-[6px_6px_0px_rgba(0,0,0,1)] flex flex-col gap-5 ${className}`}>
+    <div className={`bg-white border-2 sm:border-4 border-black p-3 sm:p-5 shadow-[3px_3px_0px_rgba(0,0,0,1)] sm:shadow-[4px_4px_0px_rgba(0,0,0,1)] flex flex-col gap-4 max-w-full overflow-hidden ${className}`}>
       {/* Encabezado */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b-2 border-black pb-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-yellow-400 text-black border-2 border-black shadow-[2px_2px_0px_rgba(0,0,0,1)]">
-            <Database size={24} />
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b-2 border-black pb-3">
+        <div className="flex items-center gap-2.5">
+          <div className="p-2 bg-yellow-400 text-black border-2 border-black shadow-[2px_2px_0px_rgba(0,0,0,1)] shrink-0">
+            <Database size={20} />
           </div>
-          <div>
-            <h3 className="text-base font-black uppercase tracking-wider text-black flex items-center gap-2">
+          <div className="min-w-0">
+            <h3 className="text-sm sm:text-base font-black uppercase tracking-wider text-black flex items-center gap-1.5 flex-wrap">
               Restauración Masiva a VPS
-              <span className="text-[10px] bg-black text-white px-2 py-0.5 uppercase tracking-widest font-mono">
-                Por Lotes (Chunks)
+              <span className="text-[9px] bg-black text-white px-1.5 py-0.5 uppercase tracking-widest font-mono">
+                Por Lotes
               </span>
             </h3>
-            <p className="text-xs font-mono text-gray-600 mt-0.5">
-              Desacople binario de Base64 a disco y persistencia SQLite WAL de alta velocidad
+            <p className="text-[11px] sm:text-xs font-mono text-gray-600 mt-0.5 truncate">
+              Desacople binario de Base64 a disco y persistencia SQLite WAL
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-mono font-bold bg-gray-100 border border-black px-2.5 py-1 text-gray-800">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[10px] sm:text-[11px] font-mono font-bold bg-gray-100 border border-black px-2 py-0.5 text-gray-800">
             Lote: {BATCH_SIZE} ítems
           </span>
         </div>
@@ -279,7 +279,7 @@ export default function VpsRestoreBackupCard({
             const file = e.dataTransfer.files?.[0];
             if (file) handleFile(file);
           }}
-          className={`border-2 border-dashed p-6 text-center transition-all cursor-pointer ${
+          className={`border-2 border-dashed p-3.5 sm:p-5 text-center transition-all cursor-pointer ${
             isDragging 
               ? 'border-yellow-500 bg-yellow-50' 
               : archivoSeleccionado 
@@ -303,31 +303,31 @@ export default function VpsRestoreBackupCard({
             }}
           />
 
-          <div className="flex flex-col items-center justify-center gap-2">
+          <div className="flex flex-col items-center justify-center gap-1.5">
             {archivoSeleccionado ? (
               <>
-                <FileJson size={36} className="text-emerald-700 animate-bounce" />
-                <span className="text-sm font-black text-black uppercase tracking-tight">
+                <FileJson size={30} className="text-emerald-700 animate-bounce" />
+                <span className="text-xs sm:text-sm font-black text-black uppercase tracking-tight break-all">
                   {archivoSeleccionado.name}
                 </span>
-                <span className="text-xs font-mono text-gray-600">
+                <span className="text-[11px] font-mono text-gray-600">
                   {(archivoSeleccionado.size / (1024 * 1024)).toFixed(2)} MB • {stats.totalItems} productos
                 </span>
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); reiniciar(); }}
-                  className="mt-2 text-[10px] font-mono font-bold text-red-600 hover:underline uppercase flex items-center gap-1"
+                  className="mt-1 text-[10px] font-mono font-bold text-red-600 hover:underline uppercase flex items-center gap-1"
                 >
                   <X size={12} /> Cambiar archivo
                 </button>
               </>
             ) : (
               <>
-                <UploadCloud size={40} className="text-gray-500" />
-                <span className="text-sm font-black text-black uppercase tracking-wider">
+                <UploadCloud size={32} className="text-gray-500" />
+                <span className="text-xs sm:text-sm font-black text-black uppercase tracking-wide">
                   Arrastra aquí tu archivo JSON o haz clic para seleccionarlo
                 </span>
-                <span className="text-xs font-mono text-gray-500">
+                <span className="text-[10px] sm:text-xs font-mono text-gray-500">
                   Compatible con copias de seguridad de Bibi Store (710+ productos)
                 </span>
               </>
