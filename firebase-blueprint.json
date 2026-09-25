@@ -1,0 +1,113 @@
+{
+  "entities": {
+    "Configuracion": {
+      "title": "Configuracion",
+      "description": "General settings",
+      "type": "object",
+      "properties": {
+        "tasa_dolar": { "type": "number" }
+      },
+      "required": ["tasa_dolar"]
+    },
+    "RolUsuario": {
+      "title": "RolUsuario",
+      "description": "User role document",
+      "type": "object",
+      "properties": {
+        "rol": { "type": "string", "enum": ["admin", "cajero"] },
+        "codigo_usado": { "type": "string" }
+      },
+      "required": ["rol", "codigo_usado"]
+    },
+    "CodigoAcceso": {
+      "title": "CodigoAcceso",
+      "description": "Invite codes to claim roles",
+      "type": "object",
+      "properties": {
+        "rol": { "type": "string", "enum": ["admin", "cajero"] },
+        "usado": { "type": "boolean" },
+        "usadoPor": { "type": "string" },
+        "creadoPor": { "type": "string" },
+        "creadoEn": { "type": "number" }
+      },
+      "required": ["rol", "usado", "creadoPor", "creadoEn"]
+    },
+    "Producto": {
+      "title": "Producto",
+      "description": "Public product data visible to everyone",
+      "type": "object",
+      "properties": {
+        "nombre": { "type": "string" },
+        "precio_usd": { "type": "number" },
+        "stock": { "type": "number" },
+        "codigo_barras": { "type": "string" }
+      },
+      "required": ["nombre", "precio_usd", "stock", "codigo_barras"]
+    },
+    "CostoProducto": {
+      "title": "CostoProducto",
+      "description": "Private cost data only visible to admin",
+      "type": "object",
+      "properties": {
+        "costo_usd": { "type": "number" }
+      },
+      "required": ["costo_usd"]
+    },
+    "Venta": {
+      "title": "Venta",
+      "description": "A completed sale",
+      "type": "object",
+      "properties": {
+        "total_usd": { "type": "number" },
+        "total_ved": { "type": "number" },
+        "fecha": { "type": "number" },
+        "ganancia_estimada_usd": { "type": "number" },
+        "vendedor_id": { "type": "string" },
+        "items": { "type": "array" }
+      },
+      "required": ["total_usd", "total_ved", "fecha", "vendedor_id", "items"]
+    },
+    "Fiado": {
+      "title": "Fiado",
+      "description": "Accounts receivable",
+      "type": "object",
+      "properties": {
+        "cliente": { "type": "string" },
+        "monto_usd": { "type": "number" },
+        "fecha": { "type": "number" },
+        "estado": { "type": "string" }
+      },
+      "required": ["cliente", "monto_usd", "fecha", "estado"]
+    }
+  },
+  "firestore": {
+    "/configuracion/general": {
+      "schema": { "$ref": "Configuracion" },
+      "description": "App settings"
+    },
+    "/usuarios/{userId}": {
+      "schema": { "$ref": "RolUsuario" },
+      "description": "User roles config"
+    },
+    "/codigos/{codigoId}": {
+      "schema": { "$ref": "CodigoAcceso" },
+      "description": "Role claiming codes"
+    },
+    "/productos/{productoId}": {
+      "schema": { "$ref": "Producto" },
+      "description": "Public catalog"
+    },
+    "/costos_productos/{productoId}": {
+      "schema": { "$ref": "CostoProducto" },
+      "description": "Private cost"
+    },
+    "/ventas/{ventaId}": {
+      "schema": { "$ref": "Venta" },
+      "description": "Sales history"
+    },
+    "/fiados/{fiadoId}": {
+      "schema": { "$ref": "Fiado" },
+      "description": "Debts"
+    }
+  }
+}

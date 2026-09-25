@@ -1,0 +1,181 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ---- 0. Global Safety Net ----
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---- Global Primitives ----
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    // New Role Logic
+    function isSuperAdmin() {
+      return isSignedIn() && request.auth.token.email == 'monetizacionreymonfr2@gmail.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function getUserRole() {
+      let isSuper = isSuperAdmin();
+      let maybeDoc = get(/databases/$(database)/documents/usuarios/$(request.auth.uid));
+      return isSuper ? 'superadmin' : (maybeDoc != null ? maybeDoc.data.rol : 'none');
+    }
+
+    function isAdmin() {
+      let role = getUserRole();
+      return role == 'admin' || role == 'superadmin';
+    }
+
+    function isCajero() {
+      return getUserRole() == 'cajero';
+    }
+
+    function isAdminOrCajero() {
+      return isAdmin() || isCajero();
+    }
+
+    // ---- Entity Validators ----
+
+    function isValidConfiguracion(data) {
+      return data.keys().hasAll(['tasa_dolar']) 
+             && data.keys().size() == 1
+             && data.tasa_dolar is number
+             && data.tasa_dolar >= 0;
+    }
+
+    function isValidRolUsuario(data) {
+      return data.keys().hasAll(['rol', 'codigo_usado'])
+             && data.keys().size() == 2
+             && data.rol is string
+             && (data.rol == 'admin' || data.rol == 'cajero')
+             && data.codigo_usado is string;
+    }
+
+    function isValidCodigo(data) {
+      return data.keys().hasAll(['rol', 'usado', 'creadoPor', 'creadoEn']) && data.keys().size() == 4
+             && data.rol is string && (data.rol == 'admin' || data.rol == 'cajero')
+             && data.usado is bool && data.usado == false
+             && data.creadoPor is string && data.creadoPor == request.auth.uid
+             && data.creadoEn is number;
+    }
+
+    function isValidProducto(data) {
+      return data.keys().hasAll(['nombre', 'precio_usd', 'stock', 'codigo_barras'])
+             && data.keys().size() == 4
+             && data.nombre is string && data.nombre.size() > 0 && data.nombre.size() <= 200
+             && data.precio_usd is number && data.precio_usd >= 0
+             && data.stock is number && data.stock >= 0
+             && data.codigo_barras is string && data.codigo_barras.size() <= 100;
+    }
+
+    function isValidCostoProducto(data) {
+      return data.keys().hasAll(['costo_usd'])
+             && data.keys().size() == 1
+             && data.costo_usd is number && data.costo_usd >= 0;
+    }
+
+    function isValidVenta(data) {
+      let hasGanancia = data.keys().hasAny(['ganancia_estimada_usd']);
+      let keysValid = hasGanancia ? data.keys().hasAll(['total_usd', 'total_ved', 'fecha', 'vendedor_id', 'items', 'ganancia_estimada_usd']) && data.keys().size() == 6
+                                  : data.keys().hasAll(['total_usd', 'total_ved', 'fecha', 'vendedor_id', 'items']) && data.keys().size() == 5;
+
+      return keysValid
+             && data.total_usd is number && data.total_usd >= 0
+             && data.total_ved is number && data.total_ved >= 0
+             && data.fecha is number
+             && data.vendedor_id is string && data.vendedor_id == request.auth.uid
+             && data.items is list && data.items.size() > 0 && data.items.size() <= 100
+             && (!hasGanancia || (data.ganancia_estimada_usd is number && data.ganancia_estimada_usd >= -9999999));
+    }
+
+    function isValidFiado(data) {
+      return data.keys().hasAll(['cliente', 'monto_usd', 'fecha', 'estado'])
+             && data.keys().size() == 4
+             && data.cliente is string && data.cliente.size() > 0 && data.cliente.size() <= 200
+             && data.monto_usd is number && data.monto_usd >= 0
+             && data.fecha is number
+             && data.estado is string && (data.estado == 'pendiente' || data.estado == 'pagado');
+    }
+
+    // ---- MATCH BLOCKS ----
+
+    match /codigos/{codigoId} {
+      // Un cajero/admin necesita leer un codigo para canjearlo
+      allow read: if isSignedIn();
+      allow create: if isSuperAdmin() && isValidId(codigoId) && isValidCodigo(incoming());
+      // Permitir la actualización (canje) solo si no ha sido usado, y solo modifican el estado.
+      allow update: if isSignedIn() && isValidId(codigoId) 
+                    && existing().usado == false 
+                    && incoming().usado == true 
+                    && incoming().usadoPor == request.auth.uid
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['usado', 'usadoPor']);
+      allow delete: if isSuperAdmin();
+    }
+
+    match /configuracion/general {
+      allow read: if isAdminOrCajero();
+      allow create: if isSuperAdmin() && isValidConfiguracion(incoming());
+      allow update: if isAdminOrCajero() && isValidConfiguracion(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['tasa_dolar']);
+    }
+
+    match /usuarios/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && userId == request.auth.uid
+                    && isValidRolUsuario(incoming())
+                    && getAfter(/databases/$(database)/documents/codigos/$(incoming().codigo_usado)).data.usadoPor == request.auth.uid
+                    && getAfter(/databases/$(database)/documents/codigos/$(incoming().codigo_usado)).data.rol == incoming().rol;
+      // El superadmin puede modificar roles también a mano por si acaso
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /productos/{productoId} {
+      allow read: if isAdminOrCajero();
+      allow create: if isAdmin() && isValidId(productoId) && isValidProducto(incoming());
+      
+      allow update: if isValidId(productoId) && isValidProducto(incoming()) && (
+        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['nombre', 'precio_usd', 'stock', 'codigo_barras'])) ||
+        (isCajero() && incoming().diff(existing()).affectedKeys().hasOnly(['stock']))
+      );
+      
+      allow delete: if isAdmin() && isValidId(productoId);
+    }
+
+    match /costos_productos/{productoId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && isValidId(productoId) && isValidCostoProducto(incoming()) 
+                    && exists(/databases/$(database)/documents/productos/$(productoId));
+      allow update: if isAdmin() && isValidId(productoId) && isValidCostoProducto(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['costo_usd']);
+      allow delete: if isAdmin() && isValidId(productoId);
+    }
+
+    match /ventas/{ventaId} {
+      allow read: if isAdmin() || (isCajero() && resource.data.vendedor_id == request.auth.uid);
+      allow create: if isAdminOrCajero() && isValidId(ventaId) && isValidVenta(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    match /fiados/{fiadoId} {
+      allow read: if isAdminOrCajero();
+      allow create: if isAdminOrCajero() && isValidId(fiadoId) && isValidFiado(incoming());
+      allow update: if isAdminOrCajero() && isValidId(fiadoId) && isValidFiado(incoming())
+                    && (existing().estado != 'pagado' || isAdmin())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['cliente', 'monto_usd', 'fecha', 'estado']);
+      allow delete: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  bibi-store:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bibi-store-app
+    restart: always
+    ports:
+      - "80:80"
+    environment:
+      - NODE_ENV=production

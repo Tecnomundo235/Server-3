@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ---- Reglas Bibi Store (Compatible con Google Auth y PIN de Tienda) ----
+
+    match /configuracion/{docId} {
+      allow read, write: if true;
+    }
+
+    match /productos/{productoId} {
+      allow read, write: if true;
+    }
+
+    match /costos_productos/{productoId} {
+      allow read, write: if true;
+    }
+
+    match /ventas/{ventaId} {
+      allow read, write: if true;
+    }
+
+    match /fiados/{fiadoId} {
+      allow read, write: if true;
+    }
+
+    match /codigos/{codigoId} {
+      allow read, write: if true;
+    }
+
+    match /usuarios/{userId} {
+      allow read, write: if true;
+    }
+
+    match /seguridad/{docId} {
+      allow read, write: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Remix Inv pos bb 2.0",
+  "description": "Punto de venta y control de inventario para Bibi Store.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
