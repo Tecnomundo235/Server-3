@@ -156,3 +156,27 @@ export async function saveVPSFiado(fiado: any): Promise<boolean> {
   }
 }
 
+export async function deleteVPSFiado(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/vps/fiados/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function updateVPSFiadoCliente(clienteAntiguo: string, clienteNuevo: string): Promise<boolean> {
+  try {
+    const res = await fetch('/api/vps/fiados/renombrar-cliente', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clienteAntiguo, clienteNuevo })
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+

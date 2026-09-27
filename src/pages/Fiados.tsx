@@ -1,26 +1,34 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../lib/firebase';
-import { collection, onSnapshot, addDoc, doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, arrayUnion } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { Fiado } from '../types';
 import { formatUSD, formatBs, cn } from '../lib/utils';
-import { Plus, Check, Search, X, Users, CreditCard, History, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Check, Search, X, Users, CreditCard, History, ChevronDown, ChevronUp, Trash2, Edit2, UserCheck } from 'lucide-react';
 import { useConfig } from '../contexts/ConfigContext';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
-import { getVPSFiados, saveVPSFiado } from '../lib/vpsService';
+import { getVPSFiados, saveVPSFiado, deleteVPSFiado, updateVPSFiadoCliente } from '../lib/vpsService';
 
 export default function Fiados() {
   const { role } = useAuth();
   const { tasaDolar } = useConfig();
   const [fiados, setFiados] = useState<Fiado[]>([]);
   const [busqueda, setBusqueda] = useState('');
+  const [filtroEstado, setFiltroEstado] = useState<'todos' | 'pendientes' | 'liquidados'>('todos');
   const [expandedHistorial, setExpandedHistorial] = useState<string | null>(null);
   
   const [modalAbierto, setModalAbierto] = useState(false);
   const [cliente, setCliente] = useState('');
   const [montoUSD, setMontoUSD] = useState('');
   const [descripcion, setDescripcion] = useState('');
+
+  // Modal para editar nombre de cliente
+  const [modalEditarNombre, setModalEditarNombre] = useState<{ abierto: boolean; clienteActual: string; nuevoNombre: string }>({
+    abierto: false,
+    clienteActual: '',
+    nuevoNombre: ''
+  });
 
   const [modalAbono, setModalAbono] = useState<{abierto: boolean, fiadoId: string, cliente: string, deuda: number}>({
     abierto: false,
@@ -53,8 +61,105 @@ export default function Fiados() {
     return () => unsub();
   }, []);
 
-  const fiadosFiltrados = fiados.filter(f => f.cliente.toLowerCase().includes(busqueda.toLowerCase()));
+  // Eliminar un fiado individual
+  const eliminarFiado = async (fiado: Fiado) => {
+    const confirmacion = window.confirm(`¿Estás seguro de eliminar el registro de deuda de ${fiado.cliente}? Esta acción no se puede deshacer.`);
+    if (!confirmacion) return;
+
+    const loadingToast = toast.loading("Eliminando registro...");
+    try {
+      // 1. Borrar en VPS
+      await deleteVPSFiado(fiado.id);
+
+      // 2. Borrar en Firestore
+      try {
+        await deleteDoc(doc(db, 'fiados', fiado.id));
+      } catch {}
+
+      // 3. Actualizar estado local
+      setFiados(prev => prev.filter(f => f.id !== fiado.id));
+      toast.success("Registro de fiado eliminado correctamente", { id: loadingToast });
+    } catch (err) {
+      console.error("Error eliminando fiado:", err);
+      toast.error("Error al eliminar el fiado", { id: loadingToast });
+    }
+  };
+
+  // Eliminar historial completo de un cliente
+  const eliminarClienteCompleto = async (nombreCliente: string) => {
+    const confirmacion = window.confirm(`¿Eliminar TODOS los registros asociados a ${nombreCliente}? Esto borrará todas sus deudas y pagos históricos.`);
+    if (!confirmacion) return;
+
+    const loadingToast = toast.loading(`Eliminando cuenta completa de ${nombreCliente}...`);
+    try {
+      const fiadosCliente = fiados.filter(f => f.cliente.trim().toLowerCase() === nombreCliente.trim().toLowerCase());
+      
+      // Borrar en VPS
+      for (const item of fiadosCliente) {
+        await deleteVPSFiado(item.id);
+        try {
+          await deleteDoc(doc(db, 'fiados', item.id));
+        } catch {}
+      }
+
+      setFiados(prev => prev.filter(f => f.cliente.trim().toLowerCase() !== nombreCliente.trim().toLowerCase()));
+      toast.success(`Cuenta de ${nombreCliente} eliminada con éxito`, { id: loadingToast });
+    } catch (err) {
+      console.error(err);
+      toast.error("Error al eliminar registros del cliente", { id: loadingToast });
+    }
+  };
+
+  // Modificar el nombre del cliente en todas sus cuentas
+  const guardarNuevoNombreCliente = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const { clienteActual, nuevoNombre } = modalEditarNombre;
+    if (!nuevoNombre.trim() || nuevoNombre.trim().toUpperCase() === clienteActual.trim().toUpperCase()) {
+      setModalEditarNombre({ abierto: false, clienteActual: '', nuevoNombre: '' });
+      return;
+    }
+
+    const normNuevo = nuevoNombre.trim().toUpperCase();
+    const loadingToast = toast.loading(`Actualizando nombre a ${normNuevo}...`);
+
+    try {
+      // 1. Actualizar en VPS
+      await updateVPSFiadoCliente(clienteActual, normNuevo);
+
+      // 2. Actualizar en Firestore
+      const fiadosCliente = fiados.filter(f => f.cliente.trim().toLowerCase() === clienteActual.trim().toLowerCase());
+      for (const f of fiadosCliente) {
+        try {
+          await updateDoc(doc(db, 'fiados', f.id), { cliente: normNuevo });
+        } catch {}
+      }
+
+      // 3. Actualizar estado local
+      setFiados(prev => prev.map(f => {
+        if (f.cliente.trim().toLowerCase() === clienteActual.trim().toLowerCase()) {
+          return { ...f, cliente: normNuevo };
+        }
+        return f;
+      }));
+
+      setModalEditarNombre({ abierto: false, clienteActual: '', nuevoNombre: '' });
+      toast.success("Nombre de cliente actualizado en todos sus registros", { id: loadingToast });
+    } catch (err) {
+      console.error(err);
+      toast.error("Error al renombrar cliente", { id: loadingToast });
+    }
+  };
+
+  const fiadosFiltrados = fiados.filter(f => {
+    const matchBusqueda = f.cliente.toLowerCase().includes(busqueda.toLowerCase().trim());
+    if (!matchBusqueda) return false;
+    if (filtroEstado === 'pendientes') return f.estado === 'pendiente';
+    if (filtroEstado === 'liquidados') return f.estado === 'pagado';
+    return true;
+  });
+
   const totalPendiente = fiados.filter(f => f.estado === 'pendiente').reduce((acc, curr) => acc + curr.monto_usd, 0);
+  const clientesTotalesUnicos = new Set(fiados.map(f => f.cliente.trim().toUpperCase())).size;
 
   if (role === 'cajero') {
     return (
@@ -227,7 +332,7 @@ export default function Fiados() {
         </button>
       </div>
 
-      <div className="p-4 border-b-2 border-black bg-white shrink-0">
+      <div className="p-4 border-b-2 border-black bg-white shrink-0 space-y-3">
         <div className="relative w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
           <input 
@@ -235,28 +340,81 @@ export default function Fiados() {
             placeholder="BUSCAR CLIENTE POR NOMBRE..." 
             value={busqueda}
             onChange={e => setBusqueda(e.target.value)}
-            className="w-full pl-10 pr-4 py-4 border-2 border-black rounded-none focus:outline-none focus:border-yellow-400 font-mono text-xs uppercase tracking-widest bg-gray-50"
+            className="w-full pl-10 pr-4 py-3.5 border-2 border-black rounded-none focus:outline-none focus:border-yellow-400 font-mono text-xs uppercase tracking-widest bg-gray-50 font-bold"
           />
+        </div>
+
+        {/* Pestañas de Filtro rápido */}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setFiltroEstado('todos')}
+            className={cn(
+              "px-3 py-1.5 border-2 border-black text-xs font-black uppercase tracking-wider transition-all",
+              filtroEstado === 'todos' ? "bg-black text-white" : "bg-white text-black hover:bg-gray-100"
+            )}
+          >
+            Todos ({fiados.length})
+          </button>
+          <button
+            onClick={() => setFiltroEstado('pendientes')}
+            className={cn(
+              "px-3 py-1.5 border-2 border-black text-xs font-black uppercase tracking-wider transition-all",
+              filtroEstado === 'pendientes' ? "bg-red-600 text-white" : "bg-white text-red-600 hover:bg-red-50"
+            )}
+          >
+            Con Deuda ({fiados.filter(f => f.estado === 'pendiente').length})
+          </button>
+          <button
+            onClick={() => setFiltroEstado('liquidados')}
+            className={cn(
+              "px-3 py-1.5 border-2 border-black text-xs font-black uppercase tracking-wider transition-all",
+              filtroEstado === 'liquidados' ? "bg-black text-white" : "bg-white text-gray-600 hover:bg-gray-100"
+            )}
+          >
+            Solventes / Pagados ({fiados.filter(f => f.estado === 'pagado').length})
+          </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto bg-gray-50 p-4 md:p-6 content-start pb-20">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {fiadosFiltrados.map(f => (
-            <div key={f.id} className={`flex flex-col border-2 border-black shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:-translate-y-1 transition-transform relative bg-white ${f.estado === 'pagado' ? 'opacity-70' : ''}`}>
+            <div key={f.id} className={`flex flex-col border-2 border-black shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:-translate-y-1 transition-transform relative bg-white ${f.estado === 'pagado' ? 'opacity-85' : ''}`}>
               <div className="p-5 flex-1 flex flex-col">
-                <div className="flex justify-between items-start mb-4">
+                <div className="flex justify-between items-start mb-3">
                   <span className={cn(
                     "text-[8px] font-black px-2 py-0.5 uppercase tracking-widest text-white",
                     f.estado === 'pagado' ? 'bg-black' : 'bg-red-600'
                   )}>
                     {f.estado === 'pagado' ? 'LIQUIDADO' : 'PENDIENTE'}
                   </span>
-                  <div className="text-[10px] text-gray-500 font-mono tracking-widest">
-                    {format(f.fecha, 'dd/MM/yy')}
+
+                  {/* Acciones de gestión de cliente: Editar nombre y Eliminar */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setModalEditarNombre({ abierto: true, clienteActual: f.cliente, nuevoNombre: f.cliente })}
+                      title="Modificar nombre del cliente"
+                      className="p-1 border border-black bg-white hover:bg-yellow-300 text-black transition-colors"
+                    >
+                      <Edit2 size={13} />
+                    </button>
+                    <button
+                      onClick={() => eliminarFiado(f)}
+                      title="Eliminar este fiado"
+                      className="p-1 border border-black bg-white hover:bg-red-600 hover:text-white text-red-600 transition-colors"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                    <span className="text-[10px] text-gray-500 font-mono tracking-widest ml-1">
+                      {format(f.fecha, 'dd/MM/yy')}
+                    </span>
                   </div>
                 </div>
-                <h3 className="font-extrabold text-xl text-black mb-1 truncate">{f.cliente}</h3>
+
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <h3 className="font-extrabold text-xl text-black truncate">{f.cliente}</h3>
+                </div>
+
                 {f.descripcion && (
                   <p className="text-[10px] text-gray-500 font-mono italic mb-4 line-clamp-2">🛒 {f.descripcion}</p>
                 )}
@@ -438,6 +596,78 @@ export default function Fiados() {
               <div className="pt-4 flex border-t-2 border-black -mx-6 -mb-6">
                 <button type="button" onClick={() => setModalAbono({ ...modalAbono, abierto: false })} className="w-1/2 py-4 font-black text-black uppercase tracking-widest hover:bg-gray-100 border-r-2 border-black">Cancelar</button>
                 <button type="submit" className="w-1/2 py-4 font-black bg-black text-white uppercase tracking-widest hover:bg-yellow-400 hover:text-black transition-all">Confirmar Abono</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Editar Nombre de Cliente */}
+      {modalEditarNombre.abierto && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+          <div className="bg-white border-4 border-black shadow-[8px_8px_0px_rgba(0,0,0,1)] w-full max-w-md overflow-hidden relative animate-in zoom-in-95 duration-200">
+            <button 
+              onClick={() => setModalEditarNombre({ abierto: false, clienteActual: '', nuevoNombre: '' })} 
+              className="absolute top-4 right-4 text-black hover:text-red-600 z-10 transition-colors"
+            >
+              <X size={24} />
+            </button>
+            <div className="p-6 border-b-2 border-black bg-yellow-400">
+              <h2 className="font-black text-xl uppercase tracking-widest mr-6">Modificar Nombre de Cliente</h2>
+            </div>
+            <form onSubmit={guardarNuevoNombreCliente} className="p-6 space-y-5">
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-widest text-gray-500 mb-1">Nombre Actual</label>
+                <div className="p-3 bg-gray-100 border-2 border-black font-black text-base text-gray-700">
+                  {modalEditarNombre.clienteActual}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-widest text-black mb-1">Nuevo Nombre Completo</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={modalEditarNombre.nuevoNombre}
+                  onChange={e => setModalEditarNombre({ ...modalEditarNombre, nuevoNombre: e.target.value })}
+                  placeholder="ESCRIBE EL NUEVO NOMBRE..."
+                  className="w-full border-2 border-black p-3.5 font-black uppercase tracking-wide text-base bg-yellow-50/50 focus:outline-none focus:bg-yellow-50 focus:border-black"
+                />
+                <p className="text-[10px] text-gray-500 font-mono mt-1">
+                  * Se actualizará este nombre en todos los registros y pagos del cliente.
+                </p>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModalEditarNombre({ abierto: false, clienteActual: '', nuevoNombre: '' })}
+                  className="w-1/2 py-3.5 font-black text-black uppercase tracking-wider bg-white border-2 border-black hover:bg-gray-100"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!modalEditarNombre.nuevoNombre.trim()}
+                  className="w-1/2 py-3.5 font-black text-black uppercase tracking-wider bg-yellow-400 border-2 border-black hover:bg-black hover:text-white transition-colors disabled:opacity-50"
+                >
+                  Guardar Nombre
+                </button>
+              </div>
+
+              <div className="border-t border-gray-200 pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cli = modalEditarNombre.clienteActual;
+                    setModalEditarNombre({ abierto: false, clienteActual: '', nuevoNombre: '' });
+                    eliminarClienteCompleto(cli);
+                  }}
+                  className="w-full py-2.5 text-xs font-bold text-red-600 hover:bg-red-50 flex items-center justify-center gap-1.5 uppercase tracking-wider"
+                >
+                  <Trash2 size={14} /> Eliminar todos los registros de este cliente
+                </button>
               </div>
             </form>
           </div>

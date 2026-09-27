@@ -222,14 +222,55 @@ export default function Vender() {
   const totalUSD = carrito.reduce((acc, curr) => acc + curr.subtotal_usd, 0);
   const totalVED = totalUSD * tasaDolar;
 
-  const fiadosPendientes = fiados.filter(f => f.estado === 'pendiente');
-  const fiadosFiltradosPendientes = fiadosPendientes.filter(f => 
-    f.cliente.toLowerCase().includes(busquedaClienteFiado.toLowerCase())
+  // Agrupación única de clientes fiados (unifica múltiples registros por nombre para que nunca aparezcan duplicados y se muestren tanto los que deben como los que ya están solventes)
+  interface ClienteFiadoResumen {
+    cliente: string;
+    deudaTotal: number;
+    ultimaFecha: number;
+    registros: Fiado[];
+    tieneDeuda: boolean;
+  }
+
+  const clientesFiadosUnicos = React.useMemo(() => {
+    const mapa = new Map<string, ClienteFiadoResumen>();
+    fiados.forEach(f => {
+      const nombreNorm = (f.cliente || '').trim().toUpperCase();
+      if (!nombreNorm) return;
+      const ex = mapa.get(nombreNorm);
+      const deuda = f.estado === 'pendiente' ? (Number(f.monto_usd) || 0) : 0;
+      if (!ex) {
+        mapa.set(nombreNorm, {
+          cliente: nombreNorm,
+          deudaTotal: deuda,
+          ultimaFecha: f.fecha || 0,
+          registros: [f],
+          tieneDeuda: deuda > 0
+        });
+      } else {
+        ex.deudaTotal += deuda;
+        ex.tieneDeuda = ex.deudaTotal > 0;
+        ex.registros.push(f);
+        if (f.fecha > ex.ultimaFecha) ex.ultimaFecha = f.fecha;
+      }
+    });
+
+    return Array.from(mapa.values()).sort((a, b) => {
+      // Primero los que tienen deuda pendiente, luego por nombre alfabético
+      if (a.tieneDeuda && !b.tieneDeuda) return -1;
+      if (!a.tieneDeuda && b.tieneDeuda) return 1;
+      return a.cliente.localeCompare(b.cliente);
+    });
+  }, [fiados]);
+
+  const clientesFiltrados = clientesFiadosUnicos.filter(c =>
+    c.cliente.toLowerCase().includes(busquedaClienteFiado.toLowerCase().trim())
   );
-  const clienteSeleccionado = modoClienteFiado === 'existente' 
-    ? fiados.find(f => f.id === fiadoClienteId && f.estado === 'pendiente')
+
+  const clienteSeleccionado = modoClienteFiado === 'existente'
+    ? clientesFiadosUnicos.find(c => c.cliente === fiadoClienteId)
     : null;
-  const deudaPrevia = clienteSeleccionado ? clienteSeleccionado.monto_usd : 0;
+
+  const deudaPrevia = clienteSeleccionado ? clienteSeleccionado.deudaTotal : 0;
   const nuevaDeudaTotal = deudaPrevia + totalUSD;
 
   const abrirModalFiado = () => {
@@ -255,9 +296,9 @@ export default function Vender() {
 
     setFiadoDescripcion(`[${fechaHora}] ${detalleProductos}`);
     
-    if (fiadosPendientes.length > 0) {
+    if (clientesFiadosUnicos.length > 0) {
       setModoClienteFiado('existente');
-      setFiadoClienteId(fiadosPendientes[0].id);
+      setFiadoClienteId(clientesFiadosUnicos[0].cliente);
     } else {
       setModoClienteFiado('nuevo');
       setFiadoClienteId('');
@@ -271,41 +312,40 @@ export default function Vender() {
     if (carrito.length === 0 || procesando) return;
 
     let nombreFinal = '';
-    let clienteExistente: Fiado | undefined = undefined;
 
     if (modoClienteFiado === 'existente') {
-      clienteExistente = fiados.find(f => f.id === fiadoClienteId && f.estado === 'pendiente');
-      if (!clienteExistente) {
-        toast.error("Por favor selecciona un cliente de la lista o elige 'Nuevo Cliente'");
+      if (!fiadoClienteId) {
+        toast.error("Por favor selecciona un cliente de la lista");
         return;
       }
-      nombreFinal = clienteExistente.cliente.trim().toUpperCase();
+      nombreFinal = fiadoClienteId.trim().toUpperCase();
     } else {
       if (!fiadoNuevoNombre.trim()) {
         toast.error("Por favor escribe el nombre de la persona a la que le vas a fiar");
         return;
       }
       nombreFinal = fiadoNuevoNombre.trim().toUpperCase();
-      const yaExiste = fiados.find(f => f.cliente.trim().toLowerCase() === nombreFinal.toLowerCase() && f.estado === 'pendiente');
-      if (yaExiste) {
-        clienteExistente = yaExiste;
-      }
     }
 
     setProcesando(true);
     const loadingToast = toast.loading(`Registrando fiado para ${nombreFinal}...`);
 
     try {
+      // Buscar si el cliente ya tiene una ficha activa en estado 'pendiente'
+      const fichaPendienteExistente = fiados.find(f => 
+        f.cliente.trim().toUpperCase() === nombreFinal && f.estado === 'pendiente'
+      );
+
       const montoTotalCompra = totalUSD;
-      const nuevoMontoTotal = clienteExistente 
-        ? clienteExistente.monto_usd + montoTotalCompra 
+      const nuevoMontoTotal = fichaPendienteExistente 
+        ? fichaPendienteExistente.monto_usd + montoTotalCompra 
         : montoTotalCompra;
 
-      const nuevaDescripcion = clienteExistente
-        ? (clienteExistente.descripcion ? `${clienteExistente.descripcion} | ${fiadoDescripcion}` : fiadoDescripcion)
+      const nuevaDescripcion = fichaPendienteExistente
+        ? (fichaPendienteExistente.descripcion ? `${fichaPendienteExistente.descripcion} | ${fiadoDescripcion}` : fiadoDescripcion)
         : fiadoDescripcion;
 
-      const targetId = clienteExistente ? clienteExistente.id : `fiado_${Date.now()}`;
+      const targetId = fichaPendienteExistente ? fichaPendienteExistente.id : `fiado_${Date.now()}`;
 
       const fiadoObj: Fiado = {
         id: targetId,
@@ -314,16 +354,22 @@ export default function Vender() {
         descripcion: nuevaDescripcion,
         fecha: Date.now(),
         estado: 'pendiente',
-        historial_abonos: clienteExistente?.historial_abonos || []
+        historial_abonos: fichaPendienteExistente?.historial_abonos || []
       };
 
       // 1. Guardar fiado en la VPS
       await saveVPSFiado(fiadoObj);
 
+      // Actualizar estado local inmediatamente
+      setFiados(prev => {
+        const sinTarget = prev.filter(f => f.id !== targetId);
+        return [fiadoObj, ...sinTarget];
+      });
+
       // 2. Sincronizar fiado con Firestore
       try {
-        if (clienteExistente) {
-          await updateDoc(doc(db, 'fiados', clienteExistente.id), {
+        if (fichaPendienteExistente) {
+          await updateDoc(doc(db, 'fiados', fichaPendienteExistente.id), {
             monto_usd: nuevoMontoTotal,
             descripcion: nuevaDescripcion,
             fecha: Date.now()
@@ -825,7 +871,7 @@ export default function Vender() {
                     )}
                   >
                     <Users size={16} />
-                    <span>Cliente Registrado ({fiadosPendientes.length})</span>
+                    <span>Cliente Registrado ({clientesFiadosUnicos.length})</span>
                   </button>
                   <button
                     type="button"
@@ -846,15 +892,15 @@ export default function Vender() {
               {/* Modo Cliente Existente */}
               {modoClienteFiado === 'existente' ? (
                 <div className="space-y-3">
-                  {fiadosPendientes.length === 0 ? (
+                  {clientesFiadosUnicos.length === 0 ? (
                     <div className="p-4 bg-gray-50 border-2 border-dashed border-gray-300 text-center">
-                      <p className="text-xs font-bold text-gray-600 mb-2">No tienes deudores pendientes registrados aún.</p>
+                      <p className="text-xs font-bold text-gray-600 mb-2">No tienes clientes registrados aún.</p>
                       <button
                         type="button"
                         onClick={() => setModoClienteFiado('nuevo')}
                         className="bg-yellow-400 border-2 border-black font-black text-xs uppercase px-3 py-1.5 shadow-[2px_2px_0px_rgba(0,0,0,1)]"
                       >
-                        Crear Nuevo Cliente Deudor
+                        Crear Nuevo Cliente
                       </button>
                     </div>
                   ) : (
@@ -862,7 +908,7 @@ export default function Vender() {
                       <div className="relative">
                         <input
                           type="text"
-                          placeholder="Buscar cliente deudor registrado..."
+                          placeholder="Buscar cliente por nombre..."
                           value={busquedaClienteFiado}
                           onChange={e => setBusquedaClienteFiado(e.target.value)}
                           className="w-full pl-9 pr-3 py-2 text-sm border-2 border-black focus:outline-none focus:border-blue-600 font-medium"
@@ -870,18 +916,18 @@ export default function Vender() {
                         <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
                       </div>
 
-                      <div className="max-h-44 overflow-y-auto border-2 border-black divide-y-2 divide-gray-100 bg-white">
-                        {fiadosFiltradosPendientes.length === 0 ? (
+                      <div className="max-h-48 overflow-y-auto border-2 border-black divide-y-2 divide-gray-100 bg-white">
+                        {clientesFiltrados.length === 0 ? (
                           <div className="p-3 text-center text-xs text-gray-500 font-medium">
-                            No se encontró ningún cliente con ese nombre.
+                            No se encontró ningún cliente registrado con ese nombre.
                           </div>
                         ) : (
-                          fiadosFiltradosPendientes.map(f => {
-                            const isSelected = f.id === fiadoClienteId;
+                          clientesFiltrados.map(c => {
+                            const isSelected = c.cliente === fiadoClienteId;
                             return (
                               <div
-                                key={f.id}
-                                onClick={() => setFiadoClienteId(f.id)}
+                                key={c.cliente}
+                                onClick={() => setFiadoClienteId(c.cliente)}
                                 className={cn(
                                   "p-2.5 flex items-center justify-between cursor-pointer transition-colors",
                                   isSelected
@@ -891,7 +937,7 @@ export default function Vender() {
                               >
                                 <div>
                                   <div className="flex items-center gap-2">
-                                    <span className="font-black text-sm text-black">{f.cliente}</span>
+                                    <span className="font-black text-sm text-black">{c.cliente}</span>
                                     {isSelected && (
                                       <span className="bg-blue-600 text-white text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase">
                                         Seleccionado
@@ -899,7 +945,11 @@ export default function Vender() {
                                     )}
                                   </div>
                                   <span className="text-[11px] font-mono text-gray-500">
-                                    Debe actualmente: <strong className="text-red-600 font-bold">{formatUSD(f.monto_usd)}</strong> ({formatBs(f.monto_usd * tasaDolar)})
+                                    {c.tieneDeuda ? (
+                                      <>Debe actualmente: <strong className="text-red-600 font-bold">{formatUSD(c.deudaTotal)}</strong> ({formatBs(c.deudaTotal * tasaDolar)})</>
+                                    ) : (
+                                      <span className="text-emerald-700 font-bold">Solvente ($0.00)</span>
+                                    )}
                                   </span>
                                 </div>
                                 <div className="text-right">

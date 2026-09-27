@@ -418,6 +418,41 @@ app.post('/api/vps/fiados', async (req, res) => {
   }
 });
 
+app.delete('/api/vps/fiados/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let fiados = readJSON(FIADOS_FILE, []);
+    fiados = fiados.filter(f => f.id !== id);
+    await writeJSONAsync(FIADOS_FILE, fiados);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/vps/fiados/renombrar-cliente', async (req, res) => {
+  try {
+    const { clienteAntiguo, clienteNuevo } = req.body;
+    if (!clienteAntiguo || !clienteNuevo) {
+      return res.status(400).json({ error: 'Faltan parámetros' });
+    }
+    const fiados = readJSON(FIADOS_FILE, []);
+    let modified = 0;
+    fiados.forEach(f => {
+      if (f.cliente && f.cliente.trim().toLowerCase() === clienteAntiguo.trim().toLowerCase()) {
+        f.cliente = clienteNuevo.trim().toUpperCase();
+        modified++;
+      }
+    });
+    if (modified > 0) {
+      await writeJSONAsync(FIADOS_FILE, fiados);
+    }
+    res.json({ success: true, modified });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 7. Configuración
 app.get('/api/vps/config', (req, res) => {
   const config = readJSON(CONFIG_FILE, { tasa_dolar: 50 });
