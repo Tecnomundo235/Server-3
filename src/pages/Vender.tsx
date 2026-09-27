@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../lib/firebase';
-import { collection, onSnapshot, doc, writeBatch, query, limit, where, getDocs, increment } from 'firebase/firestore';
+import { collection, onSnapshot, doc, writeBatch, query, limit, where, getDocs, increment, addDoc, updateDoc } from 'firebase/firestore';
 import { useConfig } from '../contexts/ConfigContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatUSD, formatBs, cn } from '../lib/utils';
-import { Producto, VentaItem, CATEGORIAS_PRODUCTO } from '../types';
-import { Search, Trash2, Scan, X, ShoppingCart, UploadCloud, Database } from 'lucide-react';
+import { Producto, VentaItem, CATEGORIAS_PRODUCTO, Fiado } from '../types';
+import { Search, Trash2, Scan, X, ShoppingCart, UploadCloud, Database, Users, UserPlus, Check, ArrowRight, AlertCircle, BookOpen } from 'lucide-react';
 import Scanner from '../components/Scanner';
 import toast from 'react-hot-toast';
-import { saveVPSVenta, migrarTodoAVPS, isVpsHost } from '../lib/vpsService';
+import { saveVPSVenta, migrarTodoAVPS, isVpsHost, getVPSFiados, saveVPSFiado } from '../lib/vpsService';
 
 export default function Vender() {
   const { tasaDolar } = useConfig();
@@ -29,6 +29,14 @@ export default function Vender() {
   const [scannerAbierto, setScannerAbierto] = useState(false);
   const [showMobileCart, setShowMobileCart] = useState(false);
 
+  // Fiados state & synchronization
+  const [fiados, setFiados] = useState<Fiado[]>([]);
+  const [modalFiadoOpen, setModalFiadoOpen] = useState(false);
+  const [modoClienteFiado, setModoClienteFiado] = useState<'existente' | 'nuevo'>('existente');
+  const [fiadoClienteId, setFiadoClienteId] = useState('');
+  const [fiadoNuevoNombre, setFiadoNuevoNombre] = useState('');
+  const [busquedaClienteFiado, setBusquedaClienteFiado] = useState('');
+  const [fiadoDescripcion, setFiadoDescripcion] = useState('');
   
   // Weight Modal State
   const [modalPesoOpen, setModalPesoOpen] = useState(false);
@@ -38,7 +46,24 @@ export default function Vender() {
   const [isEditingWeight, setIsEditingWeight] = useState(false);
 
   useEffect(() => {
-    // 1. Intentar cargar desde el backend autónomo de la VPS
+    // 1. Cargar fiados de VPS y Firestore
+    getVPSFiados().then(vpsFiados => {
+      if (vpsFiados && Array.isArray(vpsFiados) && vpsFiados.length > 0) {
+        setFiados(vpsFiados.sort((a, b) => b.fecha - a.fecha));
+      }
+    }).catch(e => console.warn("VPS fiados en Vender:", e));
+
+    let unsubFiados = () => {};
+    try {
+      unsubFiados = onSnapshot(collection(db, 'fiados'), (snap) => {
+        if (!snap.empty) {
+          const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as Fiado));
+          setFiados(data.sort((a, b) => b.fecha - a.fecha));
+        }
+      }, (err) => console.warn("Firestore fiados en Vender:", err.message));
+    } catch {}
+
+    // 2. Intentar cargar desde el backend autónomo de la VPS
     fetch('/api/vps/productos')
       .then(r => r.ok ? r.json() : null)
       .then(vpsProds => {
@@ -56,13 +81,12 @@ export default function Vender() {
       })
       .catch(() => {});
 
-    // 2. Escuchar todos los productos para la venta en Firestore
+    // 3. Escuchar todos los productos para la venta en Firestore
     const q = query(collection(db, 'productos'));
     const unsub = onSnapshot(q, (snap) => {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as Producto));
       if (data.length > 0) {
         setProductos(prev => {
-          // Si estamos en la VPS o si ya tenemos 710 productos en memoria y Firestore sólo trae 100, PRESERVAR los 710
           if (prev.length > data.length) {
             console.log(`[Vender] Conservando ${prev.length} productos frente a ${data.length} de Firestore`);
             return prev;
@@ -80,7 +104,6 @@ export default function Vender() {
       }
     }, (err) => {
       console.warn("Aviso Firestore productos en Vender:", err?.message || err);
-      // Solo mostrar toast de error si NO estamos en VPS y además NO hay productos en memoria local
       if (!isVpsHost()) {
         const cached = localStorage.getItem('bibi_store_cached_productos');
         if (!cached || cached === '[]') {
@@ -92,7 +115,11 @@ export default function Vender() {
         }
       }
     });
-    return () => unsub();
+
+    return () => {
+      unsub();
+      unsubFiados();
+    };
   }, []);
 
   const handleSubirCopiaJSON = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -194,6 +221,196 @@ export default function Vender() {
 
   const totalUSD = carrito.reduce((acc, curr) => acc + curr.subtotal_usd, 0);
   const totalVED = totalUSD * tasaDolar;
+
+  const fiadosPendientes = fiados.filter(f => f.estado === 'pendiente');
+  const fiadosFiltradosPendientes = fiadosPendientes.filter(f => 
+    f.cliente.toLowerCase().includes(busquedaClienteFiado.toLowerCase())
+  );
+  const clienteSeleccionado = modoClienteFiado === 'existente' 
+    ? fiados.find(f => f.id === fiadoClienteId && f.estado === 'pendiente')
+    : null;
+  const deudaPrevia = clienteSeleccionado ? clienteSeleccionado.monto_usd : 0;
+  const nuevaDeudaTotal = deudaPrevia + totalUSD;
+
+  const abrirModalFiado = () => {
+    if (carrito.length === 0) return;
+    
+    // Generar resumen textual detallado de los productos llevados
+    const detalleProductos = carrito.map(item => {
+      const cantidadTxt = item.unidad_medida === 'kg' 
+        ? `${item.cantidad.toFixed(3)} Kg` 
+        : `${item.cantidad}x`;
+      return `${cantidadTxt} ${item.nombre} ($${item.subtotal_usd.toFixed(2)})`;
+    }).join(', ');
+
+    const ahora = new Date();
+    const fechaHora = ahora.toLocaleString('es-VE', { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      hour12: true 
+    });
+
+    setFiadoDescripcion(`[${fechaHora}] ${detalleProductos}`);
+    
+    if (fiadosPendientes.length > 0) {
+      setModoClienteFiado('existente');
+      setFiadoClienteId(fiadosPendientes[0].id);
+    } else {
+      setModoClienteFiado('nuevo');
+      setFiadoClienteId('');
+    }
+    setFiadoNuevoNombre('');
+    setBusquedaClienteFiado('');
+    setModalFiadoOpen(true);
+  };
+
+  const confirmarFiado = async () => {
+    if (carrito.length === 0 || procesando) return;
+
+    let nombreFinal = '';
+    let clienteExistente: Fiado | undefined = undefined;
+
+    if (modoClienteFiado === 'existente') {
+      clienteExistente = fiados.find(f => f.id === fiadoClienteId && f.estado === 'pendiente');
+      if (!clienteExistente) {
+        toast.error("Por favor selecciona un cliente de la lista o elige 'Nuevo Cliente'");
+        return;
+      }
+      nombreFinal = clienteExistente.cliente.trim().toUpperCase();
+    } else {
+      if (!fiadoNuevoNombre.trim()) {
+        toast.error("Por favor escribe el nombre de la persona a la que le vas a fiar");
+        return;
+      }
+      nombreFinal = fiadoNuevoNombre.trim().toUpperCase();
+      const yaExiste = fiados.find(f => f.cliente.trim().toLowerCase() === nombreFinal.toLowerCase() && f.estado === 'pendiente');
+      if (yaExiste) {
+        clienteExistente = yaExiste;
+      }
+    }
+
+    setProcesando(true);
+    const loadingToast = toast.loading(`Registrando fiado para ${nombreFinal}...`);
+
+    try {
+      const montoTotalCompra = totalUSD;
+      const nuevoMontoTotal = clienteExistente 
+        ? clienteExistente.monto_usd + montoTotalCompra 
+        : montoTotalCompra;
+
+      const nuevaDescripcion = clienteExistente
+        ? (clienteExistente.descripcion ? `${clienteExistente.descripcion} | ${fiadoDescripcion}` : fiadoDescripcion)
+        : fiadoDescripcion;
+
+      const targetId = clienteExistente ? clienteExistente.id : `fiado_${Date.now()}`;
+
+      const fiadoObj: Fiado = {
+        id: targetId,
+        cliente: nombreFinal,
+        monto_usd: nuevoMontoTotal,
+        descripcion: nuevaDescripcion,
+        fecha: Date.now(),
+        estado: 'pendiente',
+        historial_abonos: clienteExistente?.historial_abonos || []
+      };
+
+      // 1. Guardar fiado en la VPS
+      await saveVPSFiado(fiadoObj);
+
+      // 2. Sincronizar fiado con Firestore
+      try {
+        if (clienteExistente) {
+          await updateDoc(doc(db, 'fiados', clienteExistente.id), {
+            monto_usd: nuevoMontoTotal,
+            descripcion: nuevaDescripcion,
+            fecha: Date.now()
+          });
+        } else {
+          await addDoc(collection(db, 'fiados'), {
+            cliente: nombreFinal,
+            monto_usd: montoTotalCompra,
+            descripcion: fiadoDescripcion,
+            fecha: Date.now(),
+            estado: 'pendiente'
+          });
+        }
+      } catch (errSync) {
+        console.warn("Firestore sync fiado omitido:", errSync);
+      }
+
+      // 3. Registrar venta asociada como "Fiado" para estadísticas e historial
+      const ventaData = {
+        total_usd: totalUSD,
+        total_ved: totalVED,
+        fecha: Date.now(),
+        vendedor_id: user?.uid || 'cajero',
+        metodo_pago: 'Fiado',
+        items: carrito.map(i => ({
+          productoId: i.productoId,
+          nombre: i.nombre,
+          cantidad: i.cantidad,
+          precio_unitario_usd: i.precio_unitario_usd,
+          categoria: i.categoria || 'Sin Categoría'
+        }))
+      };
+
+      try {
+        await saveVPSVenta(ventaData);
+      } catch (eVpsVenta) {
+        console.warn("Aviso guardando venta en VPS:", eVpsVenta);
+      }
+
+      // 4. Descontar stock localmente en memoria y en Firestore
+      setProductos(prev => {
+        const copy = [...prev];
+        carrito.forEach(item => {
+          const p = copy.find(x => x.id === item.productoId);
+          if (p) p.stock = Math.max(0, p.stock - item.cantidad);
+        });
+        try {
+          localStorage.setItem('bibi_store_cached_productos', JSON.stringify(copy));
+        } catch {}
+        return copy;
+      });
+
+      try {
+        const batch = writeBatch(db);
+        const repVenta = doc(collection(db, 'ventas'));
+        batch.set(repVenta, ventaData);
+        for (const item of carrito) {
+          const pref = doc(db, 'productos', item.productoId);
+          batch.update(pref, { stock: increment(-item.cantidad) });
+        }
+        await batch.commit();
+      } catch (errBatch) {
+        console.warn("Firestore batch stock omitido:", errBatch);
+      }
+
+      // 5. Actualizar estado local de fiados
+      setFiados(prev => {
+        const filtered = prev.filter(f => f.id !== targetId);
+        return [fiadoObj, ...filtered].sort((a, b) => b.fecha - a.fecha);
+      });
+
+      // 6. Limpiar y cerrar
+      setCarrito([]);
+      setModalFiadoOpen(false);
+      setShowMobileCart(false);
+
+      toast.success(
+        `🎉 ¡Fiado registrado para ${nombreFinal}! Total acumulado: ${formatUSD(nuevoMontoTotal)}`,
+        { id: loadingToast, duration: 6000 }
+      );
+    } catch (err: any) {
+      console.error("Error al registrar fiado:", err);
+      toast.error("Error al guardar el fiado: " + (err?.message || "Intente nuevamente"), { id: loadingToast });
+    } finally {
+      setProcesando(false);
+    }
+  };
 
   const procesarVenta = async () => {
     if (carrito.length === 0 || procesando) return;
@@ -410,17 +627,27 @@ export default function Vender() {
         </div>
 
         {/* Mobile floating button to open cart */}
-        <div className="md:hidden absolute bottom-4 left-4 right-4 z-10">
+        <div className="md:hidden absolute bottom-4 left-4 right-4 z-10 flex gap-2">
           <button
             onClick={() => setShowMobileCart(true)}
-            className="w-full bg-yellow-400 border-2 border-black p-4 flex justify-between items-center font-black shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-[2px_2px_0px_rgba(0,0,0,1)] transition-all"
+            className="flex-1 bg-yellow-400 border-2 border-black p-3.5 flex justify-between items-center font-black shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-[2px_2px_0px_rgba(0,0,0,1)] transition-all"
           >
             <div className="flex items-center gap-2">
-              <ShoppingCart size={20} />
+              <ShoppingCart size={18} />
               <span>Ver Carrito ({carrito.length})</span>
             </div>
             <span>{formatUSD(totalUSD)}</span>
           </button>
+          {carrito.length > 0 && (
+            <button
+              onClick={abrirModalFiado}
+              className="bg-blue-600 text-white border-2 border-black px-4 py-3.5 flex items-center gap-1.5 font-black text-sm uppercase shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:bg-blue-700 transition-all shrink-0"
+              title="Fiar productos del carrito"
+            >
+              <Users size={18} className="text-yellow-300" />
+              <span>Fiar</span>
+            </button>
+          )}
         </div>
       </section>
 
@@ -513,16 +740,263 @@ export default function Vender() {
               </div>
             </div>
             
-            <button 
-              onClick={procesarVenta}
-              disabled={carrito.length === 0 || procesando}
-              className="w-full bg-yellow-400 py-4 mt-2 border-2 border-black font-black text-lg uppercase tracking-tighter shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-[2px_2px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-x-0 disabled:translate-y-0"
-            >
-              {procesando ? 'Procesando...' : 'Registrar Venta'}
-            </button>
+            <div className="grid grid-cols-1 gap-2 pt-1">
+              <button 
+                onClick={procesarVenta}
+                disabled={carrito.length === 0 || procesando}
+                className="w-full bg-yellow-400 py-3.5 border-2 border-black font-black text-sm uppercase tracking-wider shadow-[3px_3px_0px_rgba(0,0,0,1)] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-[1px_1px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-x-0 disabled:translate-y-0 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Check size={18} />
+                <span>{procesando ? 'Procesando...' : 'Registrar Venta (Contado)'}</span>
+              </button>
+
+              <button 
+                onClick={abrirModalFiado}
+                disabled={carrito.length === 0 || procesando}
+                className="w-full bg-blue-600 text-white py-3.5 border-2 border-black font-black text-sm uppercase tracking-wider shadow-[3px_3px_0px_rgba(0,0,0,1)] hover:bg-blue-700 hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-[1px_1px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-x-0 disabled:translate-y-0 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Users size={18} className="text-yellow-300" />
+                <span>Fiar / Añadir a Fiados</span>
+              </button>
+            </div>
           </div>
         </div>
       </aside>
+
+      {/* Fiados Modal */}
+      {modalFiadoOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[70] flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white border-4 border-black w-full max-w-lg shadow-[8px_8px_0px_rgba(0,0,0,1)] my-auto animate-in zoom-in-95 duration-200 overflow-hidden flex flex-col max-h-[92vh]">
+            {/* Header */}
+            <div className="p-4 bg-blue-600 text-white border-b-4 border-black flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-2">
+                <BookOpen size={22} className="text-yellow-300" />
+                <div>
+                  <h3 className="font-black uppercase text-base sm:text-lg leading-tight tracking-wide">
+                    Registrar Venta como Fiado
+                  </h3>
+                  <p className="text-[11px] font-mono text-blue-100 uppercase tracking-wider">
+                    Sincronización directa con cuentas de clientes
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setModalFiadoOpen(false)}
+                className="text-white hover:text-yellow-300 p-1 border-2 border-transparent hover:border-white transition-colors"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-4">
+              {/* Resumen de la compra actual */}
+              <div className="bg-yellow-50 border-2 border-black p-3.5 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-gray-600 block">
+                    Monto de esta compra a fiar ({carrito.length} {carrito.length === 1 ? 'producto' : 'productos'})
+                  </span>
+                  <span className="text-2xl font-black text-black">
+                    {formatUSD(totalUSD)}
+                  </span>
+                  <span className="text-xs font-mono text-gray-600 ml-2 font-bold">
+                    ({formatBs(totalVED)})
+                  </span>
+                </div>
+                <div className="bg-blue-600 text-white font-mono text-xs font-black px-2.5 py-1 uppercase tracking-widest border border-black">
+                  A CRÉDITO
+                </div>
+              </div>
+
+              {/* Selector de Modo: Cliente Registrado vs Nuevo Cliente */}
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-gray-700 mb-2">
+                  ¿A quién le vas a fiar?
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModoClienteFiado('existente')}
+                    className={cn(
+                      "py-2.5 px-3 border-2 border-black font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer",
+                      modoClienteFiado === 'existente'
+                        ? "bg-black text-white shadow-[2px_2px_0px_rgba(0,0,0,1)]"
+                        : "bg-white text-gray-700 hover:bg-gray-100"
+                    )}
+                  >
+                    <Users size={16} />
+                    <span>Cliente Registrado ({fiadosPendientes.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setModoClienteFiado('nuevo')}
+                    className={cn(
+                      "py-2.5 px-3 border-2 border-black font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer",
+                      modoClienteFiado === 'nuevo'
+                        ? "bg-black text-white shadow-[2px_2px_0px_rgba(0,0,0,1)]"
+                        : "bg-white text-gray-700 hover:bg-gray-100"
+                    )}
+                  >
+                    <UserPlus size={16} />
+                    <span>+ Nuevo Cliente</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Modo Cliente Existente */}
+              {modoClienteFiado === 'existente' ? (
+                <div className="space-y-3">
+                  {fiadosPendientes.length === 0 ? (
+                    <div className="p-4 bg-gray-50 border-2 border-dashed border-gray-300 text-center">
+                      <p className="text-xs font-bold text-gray-600 mb-2">No tienes deudores pendientes registrados aún.</p>
+                      <button
+                        type="button"
+                        onClick={() => setModoClienteFiado('nuevo')}
+                        className="bg-yellow-400 border-2 border-black font-black text-xs uppercase px-3 py-1.5 shadow-[2px_2px_0px_rgba(0,0,0,1)]"
+                      >
+                        Crear Nuevo Cliente Deudor
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Buscar cliente deudor registrado..."
+                          value={busquedaClienteFiado}
+                          onChange={e => setBusquedaClienteFiado(e.target.value)}
+                          className="w-full pl-9 pr-3 py-2 text-sm border-2 border-black focus:outline-none focus:border-blue-600 font-medium"
+                        />
+                        <Search size={16} className="absolute left-3 top-2.5 text-gray-400" />
+                      </div>
+
+                      <div className="max-h-44 overflow-y-auto border-2 border-black divide-y-2 divide-gray-100 bg-white">
+                        {fiadosFiltradosPendientes.length === 0 ? (
+                          <div className="p-3 text-center text-xs text-gray-500 font-medium">
+                            No se encontró ningún cliente con ese nombre.
+                          </div>
+                        ) : (
+                          fiadosFiltradosPendientes.map(f => {
+                            const isSelected = f.id === fiadoClienteId;
+                            return (
+                              <div
+                                key={f.id}
+                                onClick={() => setFiadoClienteId(f.id)}
+                                className={cn(
+                                  "p-2.5 flex items-center justify-between cursor-pointer transition-colors",
+                                  isSelected
+                                    ? "bg-blue-50 border-l-4 border-blue-600"
+                                    : "hover:bg-gray-50"
+                                )}
+                              >
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-black text-sm text-black">{f.cliente}</span>
+                                    {isSelected && (
+                                      <span className="bg-blue-600 text-white text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase">
+                                        Seleccionado
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[11px] font-mono text-gray-500">
+                                    Debe actualmente: <strong className="text-red-600 font-bold">{formatUSD(f.monto_usd)}</strong> ({formatBs(f.monto_usd * tasaDolar)})
+                                  </span>
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-xs font-black text-blue-700">
+                                    + {formatUSD(totalUSD)}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                /* Modo Nuevo Cliente */
+                <div className="space-y-2">
+                  <label className="block text-[11px] font-black uppercase text-gray-700">
+                    Nombre Completo del Cliente:
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ejemplo: CARLOS MENDOZA / VECINO JUAN"
+                    value={fiadoNuevoNombre}
+                    onChange={e => setFiadoNuevoNombre(e.target.value)}
+                    autoFocus
+                    className="w-full border-2 border-black p-3 font-bold text-sm focus:outline-none focus:border-blue-600 uppercase"
+                  />
+                </div>
+              )}
+
+              {/* Cuadro de Saldo y Cálculo en Tiempo Real */}
+              <div className="bg-gray-50 border-2 border-black p-3.5 space-y-2">
+                <div className="flex justify-between items-center text-xs font-mono">
+                  <span className="text-gray-600">Deuda actual registrada:</span>
+                  <span className="font-bold text-gray-800">{formatUSD(deudaPrevia)} ({formatBs(deudaPrevia * tasaDolar)})</span>
+                </div>
+                <div className="flex justify-between items-center text-xs font-mono">
+                  <span className="text-gray-600">+ Compra actual en el carrito:</span>
+                  <span className="font-bold text-blue-700">+{formatUSD(totalUSD)} ({formatBs(totalVED)})</span>
+                </div>
+                <div className="border-t-2 border-dashed border-gray-300 pt-2 flex justify-between items-end">
+                  <div>
+                    <span className="text-xs font-black uppercase text-black block tracking-wider">
+                      NUEVA DEUDA TOTAL ACUMULADA:
+                    </span>
+                    <span className="text-[10px] font-mono text-gray-500">
+                      {formatBs(nuevaDeudaTotal * tasaDolar)}
+                    </span>
+                  </div>
+                  <span className="text-2xl font-black text-black">
+                    {formatUSD(nuevaDeudaTotal)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Detalle de lo que se lleva / Notas automáticas */}
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-gray-700 mb-1">
+                  Detalle de lo que se llevó (Generado automáticamente):
+                </label>
+                <textarea
+                  rows={2}
+                  value={fiadoDescripcion}
+                  onChange={e => setFiadoDescripcion(e.target.value)}
+                  className="w-full border-2 border-black p-2.5 text-xs font-mono focus:outline-none focus:border-blue-600 resize-none bg-white"
+                  placeholder="Detalle de productos..."
+                />
+                <p className="text-[10px] text-gray-500 font-mono mt-1">
+                  * Se actualizará la cuenta del cliente y los productos se descontarán del stock automáticamente.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer Actions */}
+            <div className="p-4 bg-gray-100 border-t-2 border-black flex gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => setModalFiadoOpen(false)}
+                className="w-1/3 py-3 border-2 border-black font-black text-xs uppercase tracking-wider bg-white hover:bg-gray-200 transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmarFiado}
+                disabled={procesando || (modoClienteFiado === 'existente' && !fiadoClienteId) || (modoClienteFiado === 'nuevo' && !fiadoNuevoNombre.trim())}
+                className="w-2/3 py-3 border-2 border-black font-black text-sm uppercase tracking-wider bg-yellow-400 hover:bg-yellow-300 shadow-[3px_3px_0px_rgba(0,0,0,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Check size={18} />
+                <span>{procesando ? 'Guardando...' : `Confirmar Fiado (${formatUSD(nuevaDeudaTotal)})`}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Weight Modal */}
       {modalPesoOpen && pesoProducto && (
